@@ -13,80 +13,54 @@ st.title("🚛 Delivery Route Planner")
 st.markdown("Build your route by adding stops below.")
 
 # --- SESSION STATE ---
+# We now store 'name' in addition to address and coords
 if "stops" not in st.session_state:
-    st.session_state.stops = []
+    st.session_state.stops = [] 
 if "depot" not in st.session_state:
     st.session_state.depot = None
 if "vrp_data" not in st.session_state:
     st.session_state.vrp_data = None
 
-# --- GEOMETRY & MATH HELPERS (NEW) ---
+# --- GEOMETRY & MATH HELPERS ---
 
 def haversine(coord1, coord2):
-    """Calculate distance in meters between two lat/lng tuples."""
     R = 6371000  # Radius of Earth in meters
     lat1, lon1 = math.radians(coord1[0]), math.radians(coord1[1])
     lat2, lon2 = math.radians(coord2[0]), math.radians(coord2[1])
-    
     dlat = lat2 - lat1
     dlon = lon2 - lon1
-    
     a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    
     return R * c
 
 def calculate_bearing(coord1, coord2):
-    """Calculate the compass bearing between two points."""
     lat1, lon1 = math.radians(coord1[0]), math.radians(coord1[1])
     lat2, lon2 = math.radians(coord2[0]), math.radians(coord2[1])
-    
     dlon = lon2 - lon1
-    
     x = math.sin(dlon) * math.cos(lat2)
     y = math.cos(lat1) * math.sin(lat2) - (math.sin(lat1) * math.cos(lat2) * math.cos(dlon))
-    
     initial_bearing = math.atan2(x, y)
     initial_bearing = math.degrees(initial_bearing)
     compass_bearing = (initial_bearing + 360) % 360
     return compass_bearing
 
 def get_interval_arrows(path, interval_meters=3000):
-    """
-    Walks along the path and returns a list of (lat, lng, bearing) 
-    tuples exactly every `interval_meters`.
-    """
     arrows = []
     dist_accum = 0
-    
     for i in range(len(path) - 1):
         p1 = path[i]
         p2 = path[i+1]
-        
-        # Distance of this tiny segment
         seg_dist = haversine(p1, p2)
-        
-        # If adding this segment passes the threshold
         if dist_accum + seg_dist >= interval_meters:
-            # How far into this segment is the 3km mark?
             remaining = interval_meters - dist_accum
             ratio = remaining / seg_dist
-            
-            # Interpolate the exact point
             new_lat = p1[0] + (p2[0] - p1[0]) * ratio
             new_lng = p1[1] + (p2[1] - p1[1]) * ratio
-            
-            # Calculate bearing for arrow direction
             bearing = calculate_bearing(p1, p2)
-            
             arrows.append((new_lat, new_lng, bearing))
-            
-            # Reset accumulator, effectively starting "fresh" from the new point
-            # (Simplification: we treat the remainder of this segment as start of next interval)
             dist_accum = seg_dist - remaining
         else:
             dist_accum += seg_dist
-            
     return arrows
 
 # --- GOOGLE MAPS HELPERS ---
@@ -181,12 +155,18 @@ with st.sidebar:
         if st.button("Set Depot") and depot_input:
             formatted, coords = validate_and_get_geocode(depot_input, gmaps)
             if formatted:
-                st.session_state.depot = {'address': formatted, 'coords': coords}
+                # Store the user input as the Name
+                st.session_state.depot = {
+                    'name': depot_input, 
+                    'address': formatted, 
+                    'coords': coords
+                }
                 st.rerun()
             else:
                 st.error("Address not found.")
     else:
-        st.success(f"📍 **Depot:** {st.session_state.depot['address']}")
+        st.success(f"📍 **{st.session_state.depot['name']}**")
+        st.caption(st.session_state.depot['address'])
         if st.button("Change Depot"):
             st.session_state.depot = None
             st.rerun()
@@ -196,14 +176,19 @@ with st.sidebar:
     # STOPS
     st.subheader("2. Add Delivery Stops")
     with st.form("add_stop_form", clear_on_submit=True):
-        new_stop_input = st.text_input("Search for Stop", placeholder="e.g. Empire State Building")
+        new_stop_input = st.text_input("Location Name / Address", placeholder="e.g. The Fat Boy")
         add_submitted = st.form_submit_button("Add Stop")
     
     if add_submitted and new_stop_input:
         formatted, coords = validate_and_get_geocode(new_stop_input, gmaps)
         if formatted:
-            st.session_state.stops.append({'address': formatted, 'coords': coords})
-            st.toast(f"Added: {formatted}", icon="✅")
+            # Save User Input as Name, Google Result as Address
+            st.session_state.stops.append({
+                'name': new_stop_input, 
+                'address': formatted, 
+                'coords': coords
+            })
+            st.toast(f"Added: {new_stop_input}", icon="✅")
         else:
             st.error("Could not find that location.")
 
@@ -212,7 +197,8 @@ with st.sidebar:
         for i, stop in enumerate(st.session_state.stops):
             col1, col2 = st.columns([4, 1])
             with col1:
-                st.text(f"{i+1}. {stop['address'][:30]}...")
+                st.markdown(f"**{i+1}. {stop['name']}**")
+                st.caption(stop['address'][:40] + "...")
             with col2:
                 if st.button("❌", key=f"del_{i}"):
                     st.session_state.stops.pop(i)
@@ -238,6 +224,7 @@ if plan_button:
         all_stops = [st.session_state.depot] + st.session_state.stops
         coords_list = [s['coords'] for s in all_stops]
         address_list = [s['address'] for s in all_stops]
+        name_list = [s['name'] for s in all_stops] # Extract names
 
         with st.spinner("Calculating optimal routes..."):
             dist_matrix = create_distance_matrix(coords_list, gmaps)
@@ -245,6 +232,7 @@ if plan_button:
                 manager, routing, solution = solve_vrp(dist_matrix, num_vehicles, depot_index=0)
                 if solution:
                     st.session_state.vrp_data = {
+                        "names": name_list,
                         "addresses": address_list,
                         "coords": coords_list,
                         "manager": manager,
@@ -261,6 +249,7 @@ if st.session_state.vrp_data:
     data = st.session_state.vrp_data
     coords = data["coords"]
     addresses = data["addresses"]
+    names = data["names"] # Get names
     solution = data["solution"]
     routing = data["routing"]
     manager = data["manager"]
@@ -284,11 +273,16 @@ if st.session_state.vrp_data:
     for i, (lat, lng) in enumerate(coords):
         color = "black" if i == 0 else "blue"
         icon = "home" if i == 0 else "info-sign"
-        popup_text = "DEPOT" if i == 0 else f"Stop {i}"
+        
+        # LABEL LOGIC FOR POPUPS
+        if i == 0:
+            popup_html = f"<b>DEPOT</b><br>{names[i]}<br>{addresses[i]}"
+        else:
+            popup_html = f"<b>{names[i]}</b><br>{addresses[i]}"
         
         folium.Marker(
             [lat, lng], 
-            popup=f"{popup_text}: {addresses[i]}",
+            popup=folium.Popup(popup_html, max_width=300),
             icon=folium.Icon(color=color, icon=icon)
         ).add_to(m)
 
@@ -313,7 +307,6 @@ if st.session_state.vrp_data:
             detailed_path = get_route_polyline(gmaps, vehicle_route_coords)
             path_to_draw = detailed_path if detailed_path else vehicle_route_coords
             
-            # 1. Draw the Route Line (Clean, no text)
             folium.PolyLine(
                 path_to_draw, 
                 color=route_color, 
@@ -322,8 +315,6 @@ if st.session_state.vrp_data:
                 tooltip=f"Vehicle {vehicle_id+1}"
             ).add_to(m)
             
-            # 2. Calculate and Draw Arrows every 3km
-            # We use 3000 meters as the interval
             arrow_points = get_interval_arrows(path_to_draw, interval_meters=3000)
             
             for (lat, lng, bearing) in arrow_points:
@@ -331,9 +322,9 @@ if st.session_state.vrp_data:
                     location=[lat, lng],
                     fill_color=route_color,
                     color=route_color,
-                    number_of_sides=3,   # Triangle
-                    radius=6,            # Size
-                    rotation=bearing,    # Rotate to match road direction
+                    number_of_sides=3,
+                    radius=6,
+                    rotation=bearing,
                     fill_opacity=1.0,
                     opacity=1.0
                 ).add_to(m)
@@ -344,29 +335,37 @@ if st.session_state.vrp_data:
     with col2:
         st.subheader("📋 Drivers' Manifest")
         for vehicle_id in range(num_vehicles):
-            st.markdown(f"**🚗 Vehicle {vehicle_id + 1}**")
+            st.markdown(f"### 🚗 Vehicle {vehicle_id + 1}")
             index = routing.Start(vehicle_id)
             route_distance = 0
-            steps = []
+            
+            # Counter for "Drop 1, Drop 2" logic
+            drop_count = 1 
             
             while not routing.IsEnd(index):
                 node_index = manager.IndexToNode(index)
+                
+                name = names[node_index]
                 addr = addresses[node_index]
+                
                 if node_index == 0:
-                    steps.append(f"🏁 **Start**: {addr}")
+                    st.markdown(f"🏁 **Start at Depot**")
+                    st.caption(f"{name}")
                 else:
-                    steps.append(f"📦 **Drop**: {addr}")
+                    # HERE IS THE LABELING CHANGE
+                    st.markdown(f"📦 **Drop {drop_count}**: {name}")
+                    st.caption(f"{addr}")
+                    drop_count += 1
                 
                 previous_index = index
                 index = solution.Value(routing.NextVar(index))
                 route_distance += routing.GetArcCostForVehicle(previous_index, index, vehicle_id)
             
+            # Handle End
             node_index = manager.IndexToNode(index)
-            steps.append(f"🛑 **End**: {addresses[node_index]}")
+            st.markdown(f"🛑 **End**: Return to Depot")
             
             st.info(f"Total Distance: {route_distance / 1000:.1f} km")
-            for step in steps:
-                st.write(step)
             st.divider()
 
 elif st.session_state.depot is None:
