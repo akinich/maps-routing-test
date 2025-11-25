@@ -3,8 +3,8 @@ import googlemaps
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 import folium
-from folium import plugins
 from streamlit_folium import st_folium
+import math
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Delivery Route Planner", layout="wide")
@@ -20,7 +20,76 @@ if "depot" not in st.session_state:
 if "vrp_data" not in st.session_state:
     st.session_state.vrp_data = None
 
-# --- HELPER FUNCTIONS ---
+# --- GEOMETRY & MATH HELPERS (NEW) ---
+
+def haversine(coord1, coord2):
+    """Calculate distance in meters between two lat/lng tuples."""
+    R = 6371000  # Radius of Earth in meters
+    lat1, lon1 = math.radians(coord1[0]), math.radians(coord1[1])
+    lat2, lon2 = math.radians(coord2[0]), math.radians(coord2[1])
+    
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    
+    a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    
+    return R * c
+
+def calculate_bearing(coord1, coord2):
+    """Calculate the compass bearing between two points."""
+    lat1, lon1 = math.radians(coord1[0]), math.radians(coord1[1])
+    lat2, lon2 = math.radians(coord2[0]), math.radians(coord2[1])
+    
+    dlon = lon2 - lon1
+    
+    x = math.sin(dlon) * math.cos(lat2)
+    y = math.cos(lat1) * math.sin(lat2) - (math.sin(lat1) * math.cos(lat2) * math.cos(dlon))
+    
+    initial_bearing = math.atan2(x, y)
+    initial_bearing = math.degrees(initial_bearing)
+    compass_bearing = (initial_bearing + 360) % 360
+    return compass_bearing
+
+def get_interval_arrows(path, interval_meters=3000):
+    """
+    Walks along the path and returns a list of (lat, lng, bearing) 
+    tuples exactly every `interval_meters`.
+    """
+    arrows = []
+    dist_accum = 0
+    
+    for i in range(len(path) - 1):
+        p1 = path[i]
+        p2 = path[i+1]
+        
+        # Distance of this tiny segment
+        seg_dist = haversine(p1, p2)
+        
+        # If adding this segment passes the threshold
+        if dist_accum + seg_dist >= interval_meters:
+            # How far into this segment is the 3km mark?
+            remaining = interval_meters - dist_accum
+            ratio = remaining / seg_dist
+            
+            # Interpolate the exact point
+            new_lat = p1[0] + (p2[0] - p1[0]) * ratio
+            new_lng = p1[1] + (p2[1] - p1[1]) * ratio
+            
+            # Calculate bearing for arrow direction
+            bearing = calculate_bearing(p1, p2)
+            
+            arrows.append((new_lat, new_lng, bearing))
+            
+            # Reset accumulator, effectively starting "fresh" from the new point
+            # (Simplification: we treat the remainder of this segment as start of next interval)
+            dist_accum = seg_dist - remaining
+        else:
+            dist_accum += seg_dist
+            
+    return arrows
+
+# --- GOOGLE MAPS HELPERS ---
 
 def validate_and_get_geocode(address, gmaps):
     if not address: return None, None
@@ -203,7 +272,7 @@ if st.session_state.vrp_data:
 
     m = folium.Map(location=coords[0], zoom_start=13, tiles="CartoDB positron")
     
-    tiles = folium.TileLayer(
+    folium.TileLayer(
         tiles = 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
         attr = 'Google',
         name = 'Google Satellite',
@@ -211,6 +280,7 @@ if st.session_state.vrp_data:
         control = True
     ).add_to(m)
 
+    # Plot Stops
     for i, (lat, lng) in enumerate(coords):
         color = "black" if i == 0 else "blue"
         icon = "home" if i == 0 else "info-sign"
@@ -241,27 +311,32 @@ if st.session_state.vrp_data:
             
             route_color = ['red', 'blue', 'green', 'purple'][vehicle_id % 4]
             detailed_path = get_route_polyline(gmaps, vehicle_route_coords)
-            
             path_to_draw = detailed_path if detailed_path else vehicle_route_coords
             
-            # Draw Main Line
-            line = folium.PolyLine(
+            # 1. Draw the Route Line (Clean, no text)
+            folium.PolyLine(
                 path_to_draw, 
                 color=route_color, 
                 weight=6, 
-                opacity=0.8, 
+                opacity=0.6, 
                 tooltip=f"Vehicle {vehicle_id+1}"
             ).add_to(m)
             
-            # --- ARROW FIX ---
-            # 'repeat=300' means place an arrow every 300 pixels
-            plugins.PolyLineTextPath(
-                line,
-                "➜",
-                repeat=300, 
-                offset=7,
-                attributes={'fill': route_color, 'font-weight': 'bold', 'font-size': '24'}
-            ).add_to(m)
+            # 2. Calculate and Draw Arrows every 3km
+            # We use 3000 meters as the interval
+            arrow_points = get_interval_arrows(path_to_draw, interval_meters=3000)
+            
+            for (lat, lng, bearing) in arrow_points:
+                folium.RegularPolygonMarker(
+                    location=[lat, lng],
+                    fill_color=route_color,
+                    color=route_color,
+                    number_of_sides=3,   # Triangle
+                    radius=6,            # Size
+                    rotation=bearing,    # Rotate to match road direction
+                    fill_opacity=1.0,
+                    opacity=1.0
+                ).add_to(m)
 
         folium.LayerControl().add_to(m)
         st_folium(m, width=700, height=500)
