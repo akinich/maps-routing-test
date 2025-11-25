@@ -3,7 +3,7 @@ import googlemaps
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 import folium
-from folium import plugins # IMPORT PLUGINS FOR ARROWS
+from folium import plugins
 from streamlit_folium import st_folium
 
 # --- PAGE CONFIG ---
@@ -201,11 +201,8 @@ if st.session_state.vrp_data:
 
     st.success(f"Routes planned for {len(addresses)-1} stops!")
 
-    # 1. SETUP MAP WITH GOOGLE TILES
-    # We use a clean "CartoDB Positron" base, then add Google Hybrid as an option
     m = folium.Map(location=coords[0], zoom_start=13, tiles="CartoDB positron")
     
-    # This adds the Google Maps Satellite/Hybrid Layer
     tiles = folium.TileLayer(
         tiles = 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
         attr = 'Google',
@@ -214,7 +211,6 @@ if st.session_state.vrp_data:
         control = True
     ).add_to(m)
 
-    # 2. DRAW MARKERS
     for i, (lat, lng) in enumerate(coords):
         color = "black" if i == 0 else "blue"
         icon = "home" if i == 0 else "info-sign"
@@ -235,7 +231,6 @@ if st.session_state.vrp_data:
             index = routing.Start(vehicle_id)
             vehicle_route_coords = []
             
-            # Extract path
             while not routing.IsEnd(index):
                 node_index = manager.IndexToNode(index)
                 vehicle_route_coords.append(coords[node_index])
@@ -244,14 +239,12 @@ if st.session_state.vrp_data:
             node_index = manager.IndexToNode(index)
             vehicle_route_coords.append(coords[node_index])
             
-            # Fetch Road Geometry
             route_color = ['red', 'blue', 'green', 'purple'][vehicle_id % 4]
             detailed_path = get_route_polyline(gmaps, vehicle_route_coords)
             
             path_to_draw = detailed_path if detailed_path else vehicle_route_coords
             
-            # 3. DRAW LINE AND ARROWS
-            # Create the main line
+            # Draw Main Line
             line = folium.PolyLine(
                 path_to_draw, 
                 color=route_color, 
@@ -260,16 +253,16 @@ if st.session_state.vrp_data:
                 tooltip=f"Vehicle {vehicle_id+1}"
             ).add_to(m)
             
-            # Add Arrows (Direction)
+            # --- ARROW FIX ---
+            # 'repeat=300' means place an arrow every 300 pixels
             plugins.PolyLineTextPath(
                 line,
                 "➜",
-                repeat=True,
-                offset=10,
-                attributes={'fill': route_color, 'font-weight': 'bold', 'font-size': '18'}
+                repeat=300, 
+                offset=7,
+                attributes={'fill': route_color, 'font-weight': 'bold', 'font-size': '24'}
             ).add_to(m)
 
-        # Layer Control allows user to switch between CartoDB (Clean) and Google Satellite
         folium.LayerControl().add_to(m)
         st_folium(m, width=700, height=500)
 
