@@ -18,6 +18,7 @@ def get_coordinates(addresses, gmaps):
     coords = []
     valid_addresses = []
     
+    # Simple progress bar
     progress_bar = st.progress(0)
     
     for i, addr in enumerate(addresses):
@@ -94,17 +95,13 @@ def solve_vrp(distance_matrix, num_vehicles, depot_index=0):
 with st.sidebar:
     st.header("Configuration")
     
-    # --- SECRETS HANDLING ---
-    # Check if the key exists in Streamlit Secrets
+    # Secrets handling
     if "GOOGLE_API_KEY" in st.secrets:
         api_key = st.secrets["GOOGLE_API_KEY"]
         st.success("API Key loaded from Secrets ✅")
     else:
-        # Fallback for local testing if secrets.toml isn't set up
         api_key = st.text_input("Enter Google Maps API Key", type="password")
-        st.caption("Tip: Add GOOGLE_API_KEY to your Secrets to hide this.")
     
-    # Hardcoded Addresses (Editable)
     default_addresses = (
         "Central Park, New York, NY\n"
         "Times Square, New York, NY\n"
@@ -116,106 +113,132 @@ with st.sidebar:
         "Rockefeller Center, New York, NY"
     )
     
-    address_input = st.text_area("List of Addresses (First one is the Depot!)", 
+    address_input = st.text_area("List of Addresses (First = Depot)", 
                                  value=default_addresses, height=200)
     
-    num_vehicles = 2
-    st.info(f"Planning for {num_vehicles} vehicles.")
+    num_vehicles = st.number_input("Number of Vehicles", min_value=1, max_value=4, value=2)
     
     run_button = st.button("Plan Routes")
 
-# --- MAIN APP LOGIC ---
+# --- MAIN LOGIC ---
 
+# 1. Initialize Session State
+if "vrp_data" not in st.session_state:
+    st.session_state.vrp_data = None
+
+# 2. CALCULATION PHASE (Triggered by Button)
 if run_button:
     if not api_key:
-        st.error("Please provide a Google Maps API Key in secrets or the sidebar.")
+        st.error("Please provide a Google Maps API Key.")
         st.stop()
 
-    # Initialize Google Maps Client
     gmaps = googlemaps.Client(key=api_key)
-    
     raw_list = address_input.split('\n')
+    
+    # Geocoding
     with st.spinner("Geocoding addresses..."):
         addresses, coords = get_coordinates(raw_list, gmaps)
-    
+
     if len(addresses) < 2:
-        st.error("Please enter at least 2 valid addresses.")
+        st.error("Need at least 2 valid addresses.")
         st.stop()
 
+    # Matrix
     with st.spinner("Calculating distance matrix..."):
         dist_matrix = create_distance_matrix(coords, gmaps)
-    
+
     if dist_matrix:
+        # Solving
         with st.spinner("Optimizing routes..."):
             manager, routing, solution = solve_vrp(dist_matrix, num_vehicles, depot_index=0)
             
-        if solution:
-            st.success("Routes optimized successfully!")
-            
-            # Create Map
-            m = folium.Map(location=coords[0], zoom_start=12)
-            colors = ['red', 'blue', 'green', 'purple', 'orange']
-            
-            # Plot markers
-            for i, (lat, lng) in enumerate(coords):
-                color = "black" if i == 0 else "gray"
-                icon = "home" if i == 0 else "info-sign"
-                folium.Marker(
-                    [lat, lng], 
-                    popup=f"{i}: {addresses[i]}",
-                    icon=folium.Icon(color=color, icon=icon)
-                ).add_to(m)
-
-            # Visualize Routes
-            col1, col2 = st.columns([1, 1])
-            
-            with col1:
-                st.subheader("Map Visualization")
-                for vehicle_id in range(num_vehicles):
-                    index = routing.Start(vehicle_id)
-                    route_coords = []
-                    route_color = colors[vehicle_id % len(colors)]
-                    
-                    while not routing.IsEnd(index):
-                        node_index = manager.IndexToNode(index)
-                        route_coords.append(coords[node_index])
-                        index = solution.Value(routing.NextVar(index))
-                    
-                    node_index = manager.IndexToNode(index)
-                    route_coords.append(coords[node_index])
-                    
-                    folium.PolyLine(
-                        route_coords, 
-                        color=route_color, 
-                        weight=5, 
-                        opacity=0.8,
-                        tooltip=f"Vehicle {vehicle_id + 1}"
-                    ).add_to(m)
-                
-                st_folium(m, width=500, height=500)
-
-            with col2:
-                st.subheader("Route Details")
-                for vehicle_id in range(num_vehicles):
-                    st.markdown(f"**🚗 Vehicle {vehicle_id + 1}**")
-                    index = routing.Start(vehicle_id)
-                    route_distance = 0
-                    route_text = ""
-                    
-                    while not routing.IsEnd(index):
-                        node_index = manager.IndexToNode(index)
-                        route_text += f"{addresses[node_index]} ➡️ <br>"
-                        previous_index = index
-                        index = solution.Value(routing.NextVar(index))
-                        route_distance += routing.GetArcCostForVehicle(previous_index, index, vehicle_id)
-                    
-                    node_index = manager.IndexToNode(index)
-                    route_text += f"🏁 Return to {addresses[node_index]}"
-                    
-                    st.markdown(f"📏 Total Distance: {route_distance / 1000:.2f} km")
-                    st.caption(route_text, unsafe_allow_html=True)
-                    st.divider()
-        else:
-            st.warning("No solution found. Try fewer constraints or check addresses.")
+            if solution:
+                # STORE RESULTS IN SESSION STATE
+                st.session_state.vrp_data = {
+                    "addresses": addresses,
+                    "coords": coords,
+                    "manager": manager,
+                    "routing": routing,
+                    "solution": solution,
+                    "num_vehicles": num_vehicles
+                }
+            else:
+                st.warning("No solution found.")
     else:
-        st.error("Failed to generate distance matrix.")
+        st.error("Failed to generate matrix.")
+
+# 3. DISPLAY PHASE (Persists across reruns)
+if st.session_state.vrp_data:
+    data = st.session_state.vrp_data
+    coords = data["coords"]
+    addresses = data["addresses"]
+    solution = data["solution"]
+    routing = data["routing"]
+    manager = data["manager"]
+    num_vehicles = data["num_vehicles"]
+
+    st.success("Routes optimized successfully!")
+    
+    # Create Map
+    m = folium.Map(location=coords[0], zoom_start=12)
+    colors = ['red', 'blue', 'green', 'purple', 'orange']
+    
+    # Plot markers
+    for i, (lat, lng) in enumerate(coords):
+        color = "black" if i == 0 else "gray"
+        icon = "home" if i == 0 else "info-sign"
+        folium.Marker(
+            [lat, lng], 
+            popup=f"{i}: {addresses[i]}",
+            icon=folium.Icon(color=color, icon=icon)
+        ).add_to(m)
+
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("Map Visualization")
+        for vehicle_id in range(num_vehicles):
+            index = routing.Start(vehicle_id)
+            route_coords = []
+            route_color = colors[vehicle_id % len(colors)]
+            
+            while not routing.IsEnd(index):
+                node_index = manager.IndexToNode(index)
+                route_coords.append(coords[node_index])
+                index = solution.Value(routing.NextVar(index))
+            
+            node_index = manager.IndexToNode(index)
+            route_coords.append(coords[node_index])
+            
+            folium.PolyLine(
+                route_coords, 
+                color=route_color, 
+                weight=5, 
+                opacity=0.8,
+                tooltip=f"Vehicle {vehicle_id + 1}"
+            ).add_to(m)
+        
+        # KEY FIX: The map needs to be here, using session state data
+        st_folium(m, width=700, height=500)
+
+    with col2:
+        st.subheader("Route Details")
+        for vehicle_id in range(num_vehicles):
+            st.markdown(f"**🚗 Vehicle {vehicle_id + 1}**")
+            index = routing.Start(vehicle_id)
+            route_distance = 0
+            route_text = ""
+            
+            while not routing.IsEnd(index):
+                node_index = manager.IndexToNode(index)
+                route_text += f"{addresses[node_index]} ➡️ <br>"
+                previous_index = index
+                index = solution.Value(routing.NextVar(index))
+                route_distance += routing.GetArcCostForVehicle(previous_index, index, vehicle_id)
+            
+            node_index = manager.IndexToNode(index)
+            route_text += f"🏁 Return to {addresses[node_index]}"
+            
+            st.markdown(f"📏 Distance: {route_distance / 1000:.2f} km")
+            st.caption(route_text, unsafe_allow_html=True)
+            st.divider()
