@@ -3,6 +3,7 @@ import googlemaps
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 import folium
+from folium import plugins # IMPORT PLUGINS FOR ARROWS
 from streamlit_folium import st_folium
 
 # --- PAGE CONFIG ---
@@ -11,9 +12,9 @@ st.set_page_config(page_title="Delivery Route Planner", layout="wide")
 st.title("🚛 Delivery Route Planner")
 st.markdown("Build your route by adding stops below.")
 
-# --- SESSION STATE INITIALIZATION ---
+# --- SESSION STATE ---
 if "stops" not in st.session_state:
-    st.session_state.stops = []  # List of dictionaries: {'address': str, 'coords': (lat, lng)}
+    st.session_state.stops = []
 if "depot" not in st.session_state:
     st.session_state.depot = None
 if "vrp_data" not in st.session_state:
@@ -22,7 +23,6 @@ if "vrp_data" not in st.session_state:
 # --- HELPER FUNCTIONS ---
 
 def validate_and_get_geocode(address, gmaps):
-    """Checks if address is valid via Google and returns formatted address + coords."""
     if not address: return None, None
     try:
         geocode_result = gmaps.geocode(address)
@@ -35,7 +35,6 @@ def validate_and_get_geocode(address, gmaps):
     return None, None
 
 def get_route_polyline(gmaps, route_coords):
-    """Get the actual road geometry (polyline) from Google Directions API."""
     if len(route_coords) < 2: return []
     try:
         directions_result = gmaps.directions(
@@ -53,7 +52,6 @@ def get_route_polyline(gmaps, route_coords):
         return []
 
 def create_distance_matrix(coords, gmaps):
-    """Calculate distances between all points."""
     matrix = []
     try:
         response = gmaps.distance_matrix(origins=coords, destinations=coords, mode="driving")
@@ -69,7 +67,6 @@ def create_distance_matrix(coords, gmaps):
     return matrix
 
 def solve_vrp(distance_matrix, num_vehicles, depot_index=0):
-    """Solves the Vehicle Routing Problem."""
     manager = pywrapcp.RoutingIndexManager(len(distance_matrix), num_vehicles, depot_index)
     routing = pywrapcp.RoutingModel(manager)
 
@@ -92,11 +89,9 @@ def solve_vrp(distance_matrix, num_vehicles, depot_index=0):
     solution = routing.SolveWithParameters(search_parameters)
     return manager, routing, solution
 
-# --- SIDEBAR: ROUTE BUILDER INTERFACE ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Configuration")
-    
-    # API Key Handling
     if "GOOGLE_API_KEY" in st.secrets:
         api_key = st.secrets["GOOGLE_API_KEY"]
     else:
@@ -110,7 +105,7 @@ with st.sidebar:
 
     st.divider()
     
-    # --- 1. SET DEPOT ---
+    # DEPOT
     st.subheader("1. Start Point (Depot)")
     if st.session_state.depot is None:
         depot_input = st.text_input("Search for Depot address", placeholder="e.g. Times Square")
@@ -129,10 +124,8 @@ with st.sidebar:
 
     st.divider()
 
-    # --- 2. ADD STOPS ---
+    # STOPS
     st.subheader("2. Add Delivery Stops")
-    
-    # Using a form so pressing Enter triggers the add
     with st.form("add_stop_form", clear_on_submit=True):
         new_stop_input = st.text_input("Search for Stop", placeholder="e.g. Empire State Building")
         add_submitted = st.form_submit_button("Add Stop")
@@ -145,7 +138,6 @@ with st.sidebar:
         else:
             st.error("Could not find that location.")
 
-    # List current stops
     if st.session_state.stops:
         st.markdown("### Current List")
         for i, stop in enumerate(st.session_state.stops):
@@ -162,8 +154,6 @@ with st.sidebar:
             st.rerun()
             
     st.divider()
-    
-    # --- 3. OPTIMIZE ---
     num_vehicles = st.number_input("Vehicles", min_value=1, max_value=4, value=2)
     plan_button = st.button("Plan Route 🚀", type="primary")
 
@@ -176,8 +166,6 @@ if plan_button:
     elif not st.session_state.stops:
         st.error("Please add at least one delivery stop.")
     else:
-        # Prepare Data
-        # List structure: [Depot, Stop 1, Stop 2, ...]
         all_stops = [st.session_state.depot] + st.session_state.stops
         coords_list = [s['coords'] for s in all_stops]
         address_list = [s['address'] for s in all_stops]
@@ -209,16 +197,24 @@ if st.session_state.vrp_data:
     manager = data["manager"]
     num_vehicles = data["num_vehicles"]
     
-    # Re-init gmaps for polyline fetching
     gmaps = googlemaps.Client(key=api_key)
 
     st.success(f"Routes planned for {len(addresses)-1} stops!")
 
-    # Initialize Map
-    m = folium.Map(location=coords[0], zoom_start=12)
-    colors = ['red', 'blue', 'green', 'purple']
+    # 1. SETUP MAP WITH GOOGLE TILES
+    # We use a clean "CartoDB Positron" base, then add Google Hybrid as an option
+    m = folium.Map(location=coords[0], zoom_start=13, tiles="CartoDB positron")
     
-    # Draw Markers
+    # This adds the Google Maps Satellite/Hybrid Layer
+    tiles = folium.TileLayer(
+        tiles = 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+        attr = 'Google',
+        name = 'Google Satellite',
+        overlay = False,
+        control = True
+    ).add_to(m)
+
+    # 2. DRAW MARKERS
     for i, (lat, lng) in enumerate(coords):
         color = "black" if i == 0 else "blue"
         icon = "home" if i == 0 else "info-sign"
@@ -230,7 +226,6 @@ if st.session_state.vrp_data:
             icon=folium.Icon(color=color, icon=icon)
         ).add_to(m)
 
-    # Visualization Columns
     col1, col2 = st.columns([2, 1])
     
     with col1:
@@ -240,6 +235,7 @@ if st.session_state.vrp_data:
             index = routing.Start(vehicle_id)
             vehicle_route_coords = []
             
+            # Extract path
             while not routing.IsEnd(index):
                 node_index = manager.IndexToNode(index)
                 vehicle_route_coords.append(coords[node_index])
@@ -248,15 +244,33 @@ if st.session_state.vrp_data:
             node_index = manager.IndexToNode(index)
             vehicle_route_coords.append(coords[node_index])
             
-            # Fetch Polygon
-            route_color = colors[vehicle_id % len(colors)]
+            # Fetch Road Geometry
+            route_color = ['red', 'blue', 'green', 'purple'][vehicle_id % 4]
             detailed_path = get_route_polyline(gmaps, vehicle_route_coords)
             
-            if detailed_path:
-                folium.PolyLine(detailed_path, color=route_color, weight=5, opacity=0.8, tooltip=f"Vehicle {vehicle_id+1}").add_to(m)
-            else:
-                folium.PolyLine(vehicle_route_coords, color=route_color, weight=5, opacity=0.5, dash_array='5,5').add_to(m)
+            path_to_draw = detailed_path if detailed_path else vehicle_route_coords
+            
+            # 3. DRAW LINE AND ARROWS
+            # Create the main line
+            line = folium.PolyLine(
+                path_to_draw, 
+                color=route_color, 
+                weight=6, 
+                opacity=0.8, 
+                tooltip=f"Vehicle {vehicle_id+1}"
+            ).add_to(m)
+            
+            # Add Arrows (Direction)
+            plugins.PolyLineTextPath(
+                line,
+                "➜",
+                repeat=True,
+                offset=10,
+                attributes={'fill': route_color, 'font-weight': 'bold', 'font-size': '18'}
+            ).add_to(m)
 
+        # Layer Control allows user to switch between CartoDB (Clean) and Google Satellite
+        folium.LayerControl().add_to(m)
         st_folium(m, width=700, height=500)
 
     with col2:
